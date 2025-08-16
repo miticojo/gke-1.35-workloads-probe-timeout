@@ -1,0 +1,53 @@
+# PromQL Queries for Probe Duration Analysis
+
+queries:
+  # P99 probe duration by workload (last 24h)
+  p99_duration_by_workload: |
+    histogram_quantile(0.99,
+      sum(rate(kubernetes_probe_duration_seconds_bucket[24h])) 
+      by (namespace, pod, probe_type, le)
+    )
+
+  # Probes that would fail with 1s timeout
+  timeout_violation_rate: |
+    sum(rate(kubernetes_probe_timeout_violations_total[1h])) 
+    by (namespace, pod, container, probe_type)
+
+  # Percentage of probes exceeding 1s
+  violation_percentage: |
+    100 * (
+      sum(rate(kubernetes_probe_timeout_violations_total[24h])) by (namespace, pod)
+      /
+      sum(rate(kubernetes_probe_observations_total[24h])) by (namespace, pod)
+    )
+
+  # Recommended timeout (P99 + 20% buffer)
+  recommended_timeout_seconds: |
+    ceil(
+      histogram_quantile(0.99,
+        sum(rate(kubernetes_probe_duration_seconds_bucket[7d])) 
+        by (namespace, pod, probe_type, le)
+      ) * 1.2
+    )
+
+  # Top 10 slowest probes
+  slowest_probes: |
+    topk(10,
+      histogram_quantile(0.99,
+        sum(rate(kubernetes_probe_duration_seconds_bucket[24h])) 
+        by (namespace, pod, container, probe_type, le)
+      )
+    )
+
+recording_rules:
+  - record: probe:duration_p99_1h
+    expr: |
+      histogram_quantile(0.99,
+        sum(rate(kubernetes_probe_duration_seconds_bucket[1h])) 
+        by (namespace, pod, probe_type, le)
+      )
+    
+  - record: probe:violation_rate_1h
+    expr: |
+      sum(rate(kubernetes_probe_timeout_violations_total[1h])) 
+      by (namespace, pod, container, probe_type)

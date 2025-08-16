@@ -1,0 +1,48 @@
+{
+  "displayName": "GKE 1.35 Probe Timeout Monitoring",
+  "mosaicLayout": {
+    "columns": 12,
+    "tiles": [
+      {
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Probe Duration P99 (seconds)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "histogram_quantile(0.99, sum(rate(kubernetes_probe_duration_seconds_bucket[1h])) by (namespace, pod, probe_type, le))",
+                "unitOverride": "s"
+              }
+            }],
+            "yAxis": {
+              "label": "Duration (seconds)",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Timeout Violations (>1s)",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "prometheusQuery": "sum(rate(kubernetes_probe_timeout_violations_total[5m])) by (namespace, pod, probe_type)",
+                "unitOverride": "1/s"
+              },
+              "plotType": "STACKED_AREA"
+            }],
+            "yAxis": {
+              "label": "Violations/sec",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,324 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: probe-monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: probe-exporter
+  namespace: probe-monitoring
+data:
+  exporter.py: |
+    #!/usr/bin/env python3
+    """
+    Lightweight Prometheus exporter for probe execution times
+    Monitors kubelet logs and exposes metrics without storing logs
+    """
+    import time
+    import re
+    import subprocess
+    from prometheus_client import start_http_server, Histogram, Counter, Gauge, Info
+    from datetime import datetime
+    import json
+    import os
+    
+    # Prometheus metrics
+    probe_duration = Histogram(
+        'kubernetes_probe_duration_seconds',
+        'Duration of probe execution in seconds',
+        ['namespace', 'pod', 'container', 'probe_type'],
+        buckets=(0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
+    )
+    
+    probe_timeout_violations = Counter(
+        'kubernetes_probe_timeout_violations_total',
+        'Number of probes that would fail with 1s timeout',
+        ['namespace', 'pod', 'container', 'probe_type']
+    )
+    
+    probe_observations = Counter(
+        'kubernetes_probe_observations_total',
+        'Total number of probe observations',
+        ['namespace', 'pod', 'container', 'probe_type']
+    )
+    
+    node_info = Info('probe_exporter_node', 'Node information')
+    last_update = Gauge('probe_exporter_last_update_timestamp', 'Last update timestamp')
+    
+    class ProbeMonitor:
+        def __init__(self):
+            self.node_name = os.environ.get('NODE_NAME', 'unknown')
+            node_info.info({'node': self.node_name})
+            
+        def parse_kubelet_events(self):
+            """Parse kubelet logs for probe timing information"""
+            try:
+                cmd = ["journalctl", "-u", "kubelet", "-f", "--no-pager", "--output=json"]
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                
+                for line in process.stdout:
+                    try:
+                        entry = json.loads(line)
+                        message = entry.get('MESSAGE', '')
+                        
+                        patterns = [
+                            r'Exec probe.*pod="?([^"]+)"?.*namespace="?([^"]+)"?.*container="?([^"]+)"?.*probe=(\w+).*duration=(\d+\.?\d*)ms',
+                            r'probe.*exec.*completed.*pod=([^,\s]+).*namespace=([^,\s]+).*took=(\d+\.?\d*)ms',
+                        ]
+                        
+                        for pattern in patterns:
+                            match = re.search(pattern, message, re.IGNORECASE)
+                            if match:
+                                self.record_probe_metric(match, message)
+                                break
+                                
+                    except json.JSONDecodeError:
+                        continue
+                    except Exception as e:
+                        print(f"Error parsing line: {e}")
+                        
+            except Exception as e:
+                print(f"Error reading kubelet logs: {e}")
+                self.monitor_container_runtime()
+        
+        def monitor_container_runtime(self):
+            """Alternative: Monitor container runtime directly"""
+            runtime = self.detect_container_runtime()
+            
+            if runtime == 'containerd':
+                self.monitor_containerd()
+            elif runtime == 'docker':
+                print("Docker runtime detected")
+            else:
+                print("No supported container runtime detected")
+        
+        def detect_container_runtime(self):
+            """Detect which container runtime is in use"""
+            if os.path.exists('/var/run/containerd/containerd.sock'):
+                return 'containerd'
+            elif os.path.exists('/var/run/docker.sock'):
+                return 'docker'
+            return None
+        
+        def monitor_containerd(self):
+            """Monitor containerd for exec events"""
+            try:
+                cmd = ["crictl", "events", "--type", "container"]
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                
+                for line in process.stdout:
+                    if 'exec' in line.lower():
+                        pass  # Parse events as needed
+                        
+            except Exception as e:
+                print(f"Error monitoring containerd: {e}")
+        
+        def record_probe_metric(self, match, full_message):
+            """Record probe metric from parsed log entry"""
+            try:
+                groups = match.groups()
+                
+                if len(groups) >= 4:
+                    pod = groups[0]
+                    namespace = groups[1]
+                    container = groups[2]
+                    
+                    duration_ms = float(groups[-1]) if groups[-1] else 0
+                    duration_sec = duration_ms / 1000.0
+                    
+                    probe_type = 'unknown'
+                    if 'liveness' in full_message.lower():
+                        probe_type = 'liveness'
+                    elif 'readiness' in full_message.lower():
+                        probe_type = 'readiness'
+                    elif 'startup' in full_message.lower():
+                        probe_type = 'startup'
+                    
+                    probe_duration.labels(
+                        namespace=namespace,
+                        pod=pod,
+                        container=container,
+                        probe_type=probe_type
+                    ).observe(duration_sec)
+                    
+                    probe_observations.labels(
+                        namespace=namespace,
+                        pod=pod,
+                        container=container,
+                        probe_type=probe_type
+                    ).inc()
+                    
+                    if duration_sec > 1.0:
+                        probe_timeout_violations.labels(
+                            namespace=namespace,
+                            pod=pod,
+                            container=container,
+                            probe_type=probe_type
+                        ).inc()
+                        print(f"Timeout violation: {namespace}/{pod}/{container} {probe_type} took {duration_sec:.2f}s")
+                    
+                    last_update.set(time.time())
+                    
+            except Exception as e:
+                print(f"Error recording metric: {e}")
+        
+        def run(self):
+            """Main monitoring loop"""
+            print(f"Starting probe metrics exporter on node {self.node_name}")
+            
+            start_http_server(9090)
+            print("Metrics server started on :9090/metrics")
+            
+            while True:
+                try:
+                    self.parse_kubelet_events()
+                except KeyboardInterrupt:
+                    break
+                except Exception as e:
+                    print(f"Error in main loop: {e}")
+                    time.sleep(10)
+    
+    if __name__ == "__main__":
+        monitor = ProbeMonitor()
+        monitor.run()
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: probe-metrics-exporter
+  namespace: probe-monitoring
+  labels:
+    app: probe-metrics-exporter
+spec:
+  selector:
+    matchLabels:
+      app: probe-metrics-exporter
+  template:
+    metadata:
+      labels:
+        app: probe-metrics-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: probe-monitor
+      hostPID: true
+      hostNetwork: false
+      containers:
+      - name: exporter
+        image: python:3.11-slim
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          pip install prometheus_client --quiet
+          python /app/exporter.py
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        ports:
+        - containerPort: 9090
+          name: metrics
+          protocol: TCP
+        volumeMounts:
+        - name: exporter-script
+          mountPath: /app
+        - name: journal
+          mountPath: /var/log/journal
+          readOnly: true
+        - name: machine-id
+          mountPath: /etc/machine-id
+          readOnly: true
+        - name: containerd-sock
+          mountPath: /var/run/containerd/containerd.sock
+          readOnly: true
+        securityContext:
+          privileged: true
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      volumes:
+      - name: exporter-script
+        configMap:
+          name: probe-exporter
+      - name: journal
+        hostPath:
+          path: /var/log/journal
+      - name: machine-id
+        hostPath:
+          path: /etc/machine-id
+      - name: containerd-sock
+        hostPath:
+          path: /var/run/containerd/containerd.sock
+          type: Socket
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: probe-metrics-exporter
+  namespace: probe-monitoring
+  labels:
+    app: probe-metrics-exporter
+spec:
+  selector:
+    app: probe-metrics-exporter
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: probe-monitor
+  namespace: probe-monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: probe-monitor
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes", "namespaces"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: probe-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: probe-monitor
+subjects:
+- kind: ServiceAccount
+  name: probe-monitor
+  namespace: probe-monitoring
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: probe-metrics-exporter
+  namespace: probe-monitoring
+  labels:
+    app: probe-metrics-exporter
+spec:
+  selector:
+    matchLabels:
+      app: probe-metrics-exporter
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
