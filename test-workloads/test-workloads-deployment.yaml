@@ -1,0 +1,310 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: probe-testing
+  labels:
+    purpose: gke-1.35-testing
+---
+# ============================================
+# Test Workload 1: Fast Probe (0.5s) - Should PASS
+# ============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-fast-probe
+  namespace: probe-testing
+  labels:
+    app: test-fast-probe
+    test-scenario: "fast-probe"
+    expected-result: "pass"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-fast-probe
+  template:
+    metadata:
+      labels:
+        app: test-fast-probe
+        test-scenario: "fast-probe"
+      annotations:
+        test-description: "Fast probe (0.5s) - should work with default 1s timeout"
+    spec:
+      containers:
+      - name: app
+        image: gcr.io/google-samples/hello-app:1.0
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          # No timeoutSeconds specified - will use default 1s
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          # No timeoutSeconds specified - will use default 1s
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+---
+# Test Deployment 2: Medium Probe (Will FAIL with default timeout)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-medium-probe
+  namespace: probe-testing
+  labels:
+    app: test-medium-probe
+    test-scenario: "medium-probe"
+    expected-result: "fail"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-medium-probe
+  template:
+    metadata:
+      labels:
+        app: test-medium-probe
+        test-scenario: "medium-probe"
+      annotations:
+        test-description: "Medium probe (2s) - will fail with default 1s timeout"
+    spec:
+      containers:
+      - name: app
+        image: gcr.io/google-samples/hello-app:1.0
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /slow
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          # No timeoutSeconds - will fail in GKE 1.35
+        readinessProbe:
+          httpGet:
+            path: /slow
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          # No timeoutSeconds - will fail in GKE 1.35
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+---
+# Test Deployment 3: Slow Probe (Will FAIL badly)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-slow-probe
+  namespace: probe-testing
+  labels:
+    app: test-slow-probe
+    test-scenario: "slow-probe"
+    expected-result: "fail"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-slow-probe
+  template:
+    metadata:
+      labels:
+        app: test-slow-probe
+        test-scenario: "slow-probe"
+      annotations:
+        test-description: "Slow probe (5s) - will fail with default 1s timeout"
+    spec:
+      containers:
+      - name: app
+        image: gcr.io/google-samples/hello-app:1.0
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /timeout
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          failureThreshold: 2
+          # No timeoutSeconds - will fail in GKE 1.35
+        readinessProbe:
+          httpGet:
+            path: /timeout
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          # No timeoutSeconds - will fail in GKE 1.35
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+---
+# Test Deployment 4: Variable Probe (Intermittent failures)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-variable-probe
+  namespace: probe-testing
+  labels:
+    app: test-variable-probe
+    test-scenario: "variable-probe"
+    expected-result: "intermittent-fail"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: test-variable-probe
+  template:
+    metadata:
+      labels:
+        app: test-variable-probe
+        test-scenario: "variable-probe"
+      annotations:
+        test-description: "Variable probe (0.5-3s) - intermittent failures"
+    spec:
+      containers:
+      - name: app
+        image: gcr.io/google-samples/hello-app:1.0
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /flaky
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          # No timeoutSeconds - will have intermittent failures
+        readinessProbe:
+          httpGet:
+            path: /flaky
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          # No timeoutSeconds - will have intermittent failures
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+---
+# Test Deployment 5: Startup Probe Test
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-startup-probe
+  namespace: probe-testing
+  labels:
+    app: test-startup-probe
+    test-scenario: "startup-probe"
+    expected-result: "fail-startup"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-startup-probe
+  template:
+    metadata:
+      labels:
+        app: test-startup-probe
+        test-scenario: "startup-probe"
+      annotations:
+        test-description: "Startup probe (10s first time) - will fail initial startup"
+    spec:
+      containers:
+      - name: app
+        image: gcr.io/google-samples/hello-app:1.0
+        ports:
+        - containerPort: 8080
+        startupProbe:
+          httpGet:
+            path: /startup
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 2
+          failureThreshold: 3
+          # No timeoutSeconds - will fail on first startup
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 10
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+---
+# Test Deployment 6: Fixed Probes (Control group with proper timeouts)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-fixed-probes
+  namespace: probe-testing
+  labels:
+    app: test-fixed-probes
+    test-scenario: "fixed-probes"
+    expected-result: "pass"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-fixed-probes
+  template:
+    metadata:
+      labels:
+        app: test-fixed-probes
+        test-scenario: "fixed-probes"
+      annotations:
+        test-description: "All probes with proper timeoutSeconds - should all pass"
+    spec:
+      containers:
+      - name: app
+        image: gcr.io/google-samples/hello-app:1.0
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /slow
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 10  # Properly configured
+          failureThreshold: 2
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5   # Properly configured
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"

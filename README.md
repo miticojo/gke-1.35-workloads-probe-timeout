@@ -183,6 +183,30 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+## 🧪 Test Workloads
+
+This repository includes a set of test workloads to help you evaluate the monitoring and remediation solution. These workloads simulate different probe response times and scenarios.
+
+### Deploying Test Workloads
+
+To deploy the test workloads, run the following command:
+
+```bash
+make deploy-test-workloads
+```
+
+This will create a new namespace called `probe-testing` and deploy a set of applications with different probe configurations.
+
+### Deleting Test Workloads
+
+To delete the test workloads, run the following command:
+
+```bash
+make delete-test-workloads
+```
+
+This will delete the `probe-testing` namespace and all the resources created by the test workloads.
+
 ## 📚 References
 
 - [Kubernetes Probe Documentation](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/)

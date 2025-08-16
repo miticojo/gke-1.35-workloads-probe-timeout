@@ -43,3 +43,9 @@ lint:
 
 format:
 	black scripts/
+
+deploy-test-workloads:
+	kubectl apply -f test-workloads/test-workloads-deployment.yaml
+
+delete-test-workloads:
+	kubectl delete -f test-workloads/test-workloads-deployment.yaml
